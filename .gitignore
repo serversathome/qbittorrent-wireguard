@@ -1,0 +1,15 @@
+# Docker
+.env
+*.log
+
+# Config files (don't commit your VPN config!)
+config/
+downloads/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
