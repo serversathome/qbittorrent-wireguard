@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  qbittorrent-vpn:
+    image: serversathome/qbittorrent-vpn:latest
+    container_name: qbittorrent-vpn
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=1
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - WEBUI_PORT=8080
+      - VPN_PORT=  # Optional: Set this to your VPN provider's forwarded port
+      - DEBUG=false  # Set to 'true' to enable iptables logging for troubleshooting
+    volumes:
+      - ./config:/config
+      - ./downloads:/downloads
+      # Mount your WireGuard config here:
+      # Make sure your wg0.conf file is in ./config/wireguard/wg0.conf
+    ports:
+      - 8080:8080  # qBittorrent WebUI
+      # - 6881:6881  # Only map this if you want direct access (not recommended with VPN)
+      # - 6881:6881/udp
+    restart: unless-stopped
+    
+    # Optional: Use host networking for better performance (not recommended for security)
+    # network_mode: host
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
