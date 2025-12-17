@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   qbittorrent-vpn:
     image: serversathome/qbittorrent-vpn:latest
@@ -23,15 +21,9 @@ services:
       # Mount your WireGuard config here:
       # Make sure your wg0.conf file is in ./config/wireguard/wg0.conf
     ports:
-      - 8080:8080  # qBittorrent WebUI
-      # - 6881:6881  # Only map this if you want direct access (not recommended with VPN)
-      # - 6881:6881/udp
+      - 8080:8080 
     restart: unless-stopped
-    
-    # Optional: Use host networking for better performance (not recommended for security)
-    # network_mode: host
-    
-    # Health check
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080"]
       interval: 60s
