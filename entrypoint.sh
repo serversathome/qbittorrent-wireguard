@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+F#!/usr/bin/env bash
 set -e
 
 WG_CONF="/config/wg0.conf"
@@ -38,10 +38,6 @@ iptables -A OUTPUT -o "$WG_INTERFACE" -j ACCEPT
 # Drop all other outbound traffic (killswitch)
 iptables -A OUTPUT -j DROP
 
-
-# Update Alpine resolvconf
-echo "nameserver 1.1.1.1" | resolvconf -a wg0
-echo "nameserver 8.8.8.8" | resolvconf -a wg0
 
 
 
