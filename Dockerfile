@@ -8,7 +8,8 @@ RUN apk add --no-cache \
     ip6tables \
     iproute2 \
     curl \
-    bash
+    bash \
+    openresolv
 
 # Copy startup script
 COPY root/ /
