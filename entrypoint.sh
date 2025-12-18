@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 set -e
 
 WG_CONF="/config/wg0.conf"
@@ -6,15 +6,19 @@ WG_INTERFACE="wg0"
 CHECK_HOST="1.1.1.1"
 QBIT_CONF="/config/qBittorrent/qBittorrent.conf"
 
-# Ensure WireGuard config exists
+echo "[INFO] Starting WireGuard VPN setup..."
+
+# Check WireGuard config exists
 if [ ! -f "$WG_CONF" ]; then
-  echo "[ERROR] WireGuard configuration ($WG_CONF) not found."
+  echo "[ERROR] WireGuard config $WG_CONF not found!"
   exit 1
 fi
 
-echo "[INFO] Bringing up WireGuard interface..."
+# Disable wg-quick DNS updates to avoid Alpine resolvconf errors
 export WG_QUICK_NO_RESOLVCONF=1
-wg-quick up "$WG_CONF" || {
+
+# Source wg-quick to avoid 'return' errors
+. /usr/bin/wg-quick up "$WG_CONF" || {
   echo "[ERROR] Failed to bring up WireGuard interface."
   exit 1
 }
@@ -22,6 +26,7 @@ wg-quick up "$WG_CONF" || {
 sleep 3
 
 echo "[INFO] Setting up killswitch firewall..."
+
 # Flush old rules
 iptables -F
 iptables -t nat -F
@@ -30,25 +35,25 @@ iptables -X
 # Allow loopback
 iptables -A OUTPUT -o lo -j ACCEPT
 
-# Allow local networks to bypass VPN
+# Allow local network ranges to bypass VPN
 iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
 iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
 iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
 
-# Allow VPN traffic only
+# Allow VPN interface traffic
 iptables -A OUTPUT -o "$WG_INTERFACE" -j ACCEPT
 
 # Drop everything else (killswitch)
 iptables -A OUTPUT -j DROP
 
-# Optional: set static DNS to ensure container can resolve even if VPN fails
+# Optional: static DNS to ensure container can resolve even if VPN fails
 echo "nameserver 1.1.1.1" > /etc/resolv.conf
 echo "nameserver 8.8.8.8" >> /etc/resolv.conf
 
-# Verify initial VPN connectivity
+# Check VPN connectivity
 if ! ping -c 1 -W 2 "$CHECK_HOST" >/dev/null 2>&1; then
   echo "[ERROR] VPN appears down — cannot reach $CHECK_HOST."
-  wg-quick down "$WG_CONF"
+  . /usr/bin/wg-quick down "$WG_CONF"
   exit 1
 fi
 
@@ -70,14 +75,14 @@ if [ -n "$VPN_PORT_FORWARD" ]; then
   iptables -A INPUT -i "$WG_INTERFACE" -p udp --dport "$VPN_PORT_FORWARD" -j ACCEPT
 fi
 
-echo "[INFO] VPN up, killswitch active — starting watchdog..."
+echo "[INFO] VPN up, killswitch active — starting self-healing watchdog..."
 
 # --- VPN watchdog: monitors connectivity every 60s ---
 (
   while sleep 60; do
     if ! ping -c 1 -W 2 "$CHECK_HOST" >/dev/null 2>&1; then
       echo "[WARN] Lost VPN connectivity — shutting down qBittorrent."
-      wg-quick down "$WG_CONF"
+      . /usr/bin/wg-quick down "$WG_CONF"
       pkill qbittorrent-nox || true
       exit 1
     else
@@ -86,6 +91,6 @@ echo "[INFO] VPN up, killswitch active — starting watchdog..."
   done
 ) &
 
-# Launch qBittorrent WebUI
+# Start qBittorrent WebUI
 echo "[INFO] Starting qBittorrent WebUI on port ${WEBUI_PORT:-8080}..."
 exec s6-setuidgid abc qbittorrent-nox --webui-port=${WEBUI_PORT:-8080}
