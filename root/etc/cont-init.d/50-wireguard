@@ -4,10 +4,31 @@ echo "======================================"
 echo "qBittorrent-VPN WireGuard Setup"
 echo "======================================"
 
+# CRITICAL: Block ALL traffic by default FIRST (before any checks)
+# This ensures no leaks even if the script fails
+echo "Setting up firewall kill switch..."
+iptables -F OUTPUT 2>/dev/null || true
+iptables -F INPUT 2>/dev/null || true
+iptables -P OUTPUT DROP
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+
+# Allow loopback immediately
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
 # Check if WireGuard config exists
 if [ ! -f /config/wireguard/wg0.conf ]; then
-    echo "ERROR: WireGuard config not found at /config/wireguard/wg0.conf"
-    echo "Please mount your WireGuard configuration file to /config/wireguard/wg0.conf"
+    echo "=========================================="
+    echo "FATAL ERROR: WireGuard config not found!"
+    echo "=========================================="
+    echo "Expected location: /config/wireguard/wg0.conf"
+    echo ""
+    echo "The container is now in LOCKDOWN mode - no traffic allowed."
+    echo "Please create your WireGuard config file and restart the container."
+    echo "=========================================="
+    # Keep container running but in lockdown - no traffic possible
+    tail -f /dev/null
     exit 1
 fi
 
@@ -19,59 +40,93 @@ cp /config/wireguard/wg0.conf /etc/wireguard/wg0.conf
 chmod 600 /etc/wireguard/wg0.conf
 
 # Load WireGuard kernel module
-modprobe wireguard || {
-    echo "ERROR: Failed to load WireGuard kernel module"
-    echo "Please ensure your host has WireGuard support (kernel module or wireguard-dkms)"
+if ! modprobe wireguard 2>/dev/null; then
+    echo "=========================================="
+    echo "FATAL ERROR: WireGuard module not available"
+    echo "=========================================="
+    echo "Please install WireGuard on your Docker host:"
+    echo "  Ubuntu/Debian: apt-get install wireguard"
+    echo ""
+    echo "The container is now in LOCKDOWN mode - no traffic allowed."
+    echo "=========================================="
+    tail -f /dev/null
     exit 1
-}
+fi
 
 # Define local networks that should bypass VPN
 LOCAL_NETWORKS="10.0.0.0/8 192.168.0.0/16 172.16.0.0/12 100.64.0.0/10 100.84.0.0/12"
 
 # Enable IP forwarding
-echo "Enabling IP forwarding..."
 echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# Get WireGuard endpoint BEFORE starting interface (for firewall rules)
+WG_ENDPOINT=$(grep -oP '(?<=Endpoint = ).*(?=:\d+)' /etc/wireguard/wg0.conf | head -1)
+WG_PORT=$(grep -oP '(?<=Endpoint = .*:)\d+' /etc/wireguard/wg0.conf | head -1)
+
+# Allow WireGuard handshake (MUST allow this before starting wg-quick)
+if [ -n "$WG_ENDPOINT" ] && [ -n "$WG_PORT" ]; then
+    echo "Allowing WireGuard endpoint: $WG_ENDPOINT:$WG_PORT"
+    iptables -A OUTPUT -d $WG_ENDPOINT -p udp --dport $WG_PORT -j ACCEPT
+fi
 
 # Bring up WireGuard interface
 echo "Starting WireGuard interface..."
-wg-quick up wg0 || {
-    echo "ERROR: Failed to start WireGuard interface"
+if ! wg-quick up wg0; then
+    echo "=========================================="
+    echo "FATAL ERROR: WireGuard failed to start"
+    echo "=========================================="
+    echo "Please check your wg0.conf file for errors."
+    echo ""
+    echo "The container is now in LOCKDOWN mode - no traffic allowed."
+    echo "=========================================="
+    tail -f /dev/null
     exit 1
-}
+fi
 
 # Wait for interface to be ready
-sleep 2
+sleep 3
+
+# Verify interface is actually up
+if ! ip link show wg0 &>/dev/null; then
+    echo "=========================================="
+    echo "FATAL ERROR: WireGuard interface not found"
+    echo "=========================================="
+    echo "The container is now in LOCKDOWN mode - no traffic allowed."
+    echo "=========================================="
+    wg-quick down wg0 2>/dev/null || true
+    tail -f /dev/null
+    exit 1
+fi
 
 # Get WireGuard interface IP
-WG_IP=$(ip addr show wg0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+WG_IP=$(ip addr show wg0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+if [ -z "$WG_IP" ]; then
+    echo "=========================================="
+    echo "FATAL ERROR: No IP assigned to wg0"
+    echo "=========================================="
+    echo "The container is now in LOCKDOWN mode - no traffic allowed."
+    echo "=========================================="
+    wg-quick down wg0 2>/dev/null || true
+    tail -f /dev/null
+    exit 1
+fi
 echo "WireGuard IP: ${WG_IP}"
 
-# Flush existing iptables rules (except ACCEPT for established connections)
+# Now configure firewall with VPN active
 echo "Configuring firewall rules..."
-iptables -F OUTPUT
-iptables -F INPUT
-
-# Default policies
-iptables -P OUTPUT DROP
-iptables -P INPUT DROP
-iptables -P FORWARD DROP
-
-# Allow loopback
-iptables -A INPUT -i lo -j ACCEPT
-iptables -A OUTPUT -o lo -j ACCEPT
 
 # Allow established and related connections
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# Allow local network access (bypass VPN)
+# Allow local network access (bypass VPN for WebUI)
 for NET in $LOCAL_NETWORKS; do
     echo "Adding local network bypass: $NET"
     iptables -A INPUT -s $NET -j ACCEPT
     iptables -A OUTPUT -d $NET -j ACCEPT
 done
 
-# Allow DNS through VPN (WireGuard typically handles this)
+# Allow DNS through VPN
 iptables -A OUTPUT -o wg0 -p udp --dport 53 -j ACCEPT
 iptables -A OUTPUT -o wg0 -p tcp --dport 53 -j ACCEPT
 
@@ -79,43 +134,75 @@ iptables -A OUTPUT -o wg0 -p tcp --dport 53 -j ACCEPT
 iptables -A OUTPUT -o wg0 -j ACCEPT
 iptables -A INPUT -i wg0 -j ACCEPT
 
-# Allow WireGuard handshake (outbound UDP to VPN server)
-WG_ENDPOINT=$(grep -oP '(?<=Endpoint = ).*(?=:\d+)' /etc/wireguard/wg0.conf | head -1)
-WG_PORT=$(grep -oP '(?<=Endpoint = .*:)\d+' /etc/wireguard/wg0.conf | head -1)
+# CRITICAL: Add policy routing to ensure qBittorrent traffic ONLY goes through wg0
+# Create a routing table for VPN-only traffic
+echo "200 vpn_only" >> /etc/iproute2/rt_tables 2>/dev/null || true
 
-if [ -n "$WG_ENDPOINT" ] && [ -n "$WG_PORT" ]; then
-    echo "Allowing WireGuard endpoint: $WG_ENDPOINT:$WG_PORT"
-    iptables -A OUTPUT -d $WG_ENDPOINT -p udp --dport $WG_PORT -j ACCEPT
-fi
+# Mark packets from qBittorrent user (if we can identify them)
+# Force marked packets to use VPN routing table
+ip rule add fwmark 0x1 table vpn_only priority 100 2>/dev/null || true
+ip route add default dev wg0 table vpn_only 2>/dev/null || true
+
+# Add a catch-all rule: if wg0 is default route and it goes down, there's NO fallback
+ip route del default 2>/dev/null || true
+ip route add default dev wg0
 
 # Configure port forwarding if specified
 if [ -n "$VPN_PORT" ]; then
     echo "Configuring port forwarding for port: $VPN_PORT"
     iptables -A INPUT -i wg0 -p tcp --dport $VPN_PORT -j ACCEPT
     iptables -A INPUT -i wg0 -p udp --dport $VPN_PORT -j ACCEPT
-    
-    # Store port for qBittorrent configuration
     echo "$VPN_PORT" > /tmp/vpn_port
 fi
 
-# Log dropped packets (optional, for debugging)
+# Log dropped packets for debugging
 if [ "${DEBUG}" = "true" ]; then
     iptables -A OUTPUT -j LOG --log-prefix "DROPPED OUTPUT: " --log-level 4
     iptables -A INPUT -j LOG --log-prefix "DROPPED INPUT: " --log-level 4
 fi
 
-# Verify WireGuard is working
+# CRITICAL: Verify VPN is actually working before allowing qBittorrent to start
 echo "Verifying VPN connection..."
-sleep 3
+VPN_TEST_ATTEMPTS=0
+VPN_TEST_MAX=5
 
-# Test connection through VPN
-if timeout 10 curl -s --interface wg0 https://api.ipify.org > /tmp/vpn_ip 2>/dev/null; then
-    VPN_IP=$(cat /tmp/vpn_ip)
-    echo "✓ VPN is working! External IP: $VPN_IP"
-else
-    echo "WARNING: Could not verify VPN connection"
-fi
+while [ $VPN_TEST_ATTEMPTS -lt $VPN_TEST_MAX ]; do
+    if timeout 15 curl -s --interface wg0 https://api.ipify.org > /tmp/vpn_ip 2>/dev/null; then
+        VPN_IP=$(cat /tmp/vpn_ip)
+        echo "=========================================="
+        echo "✓ VPN CONNECTION VERIFIED!"
+        echo "✓ External IP: $VPN_IP"
+        echo "✓ All traffic will be routed through VPN"
+        echo "✓ Kill switch is ACTIVE"
+        echo "=========================================="
+        
+        # Create a marker file to signal VPN is ready
+        touch /tmp/vpn_ready
+        exit 0
+    fi
+    
+    VPN_TEST_ATTEMPTS=$((VPN_TEST_ATTEMPTS + 1))
+    echo "VPN test attempt $VPN_TEST_ATTEMPTS/$VPN_TEST_MAX failed, retrying..."
+    sleep 3
+done
 
-echo "======================================"
-echo "WireGuard VPN setup complete!"
-echo "======================================"
+# If we got here, VPN verification failed
+echo "=========================================="
+echo "FATAL ERROR: VPN verification failed"
+echo "=========================================="
+echo "Could not verify internet connectivity through VPN."
+echo "This could mean:"
+echo "  - WireGuard connected but routing is broken"
+echo "  - VPN server is down"
+echo "  - Firewall rules are misconfigured"
+echo ""
+echo "The container is now in LOCKDOWN mode - no traffic allowed."
+echo "Check 'docker logs' for details."
+echo "=========================================="
+
+# Shut down WireGuard
+wg-quick down wg0 2>/dev/null || true
+
+# Keep container in lockdown
+tail -f /dev/null
+exit 1
