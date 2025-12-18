@@ -3,6 +3,7 @@ FROM ghcr.io/linuxserver/qbittorrent:latest
 # Install WireGuard and networking tools (Alpine Linux)
 RUN apk add --no-cache \
     wireguard-tools \
+    wireguard-go \
     iptables \
     ip6tables \
     iproute2 \
