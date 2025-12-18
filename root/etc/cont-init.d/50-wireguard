@@ -40,12 +40,33 @@ cp /config/wireguard/wg0.conf /etc/wireguard/wg0.conf
 chmod 600 /etc/wireguard/wg0.conf
 
 # Load WireGuard kernel module
-if ! modprobe wireguard 2>/dev/null; then
+echo "Loading WireGuard kernel module..."
+echo "Checking WireGuard availability:"
+echo "  - Kernel module: $(modprobe wireguard 2>&1 && echo 'Available' || echo 'Not available')"
+echo "  - /dev/net/tun: $([ -e /dev/net/tun ] && echo 'Available' || echo 'Not available')"
+echo "  - wireguard-go: $(command -v wireguard-go >/dev/null && echo 'Available' || echo 'Not available')"
+
+if modprobe wireguard 2>/dev/null; then
+    echo "✓ WireGuard kernel module loaded successfully"
+elif [ -e /dev/net/tun ] && command -v wireguard-go >/dev/null; then
+    echo "⚠ Kernel module unavailable, using wireguard-go (userspace)"
+    # Set environment variable to tell wg-quick to use wireguard-go
+    export WG_QUICK_USERSPACE_IMPLEMENTATION=wireguard-go
+else
     echo "=========================================="
-    echo "FATAL ERROR: WireGuard module not available"
+    echo "FATAL ERROR: WireGuard not available"
     echo "=========================================="
-    echo "Please install WireGuard on your Docker host:"
-    echo "  Ubuntu/Debian: apt-get install wireguard"
+    echo "Diagnostics:"
+    echo "  - Kernel module: Failed to load"
+    echo "  - /dev/net/tun: $([ -e /dev/net/tun ] && echo 'Present' || echo 'MISSING')"
+    echo "  - wireguard-go: $(command -v wireguard-go >/dev/null && echo 'Installed' || echo 'Not found')"
+    echo ""
+    echo "Solutions:"
+    echo "  1. Install WireGuard on host: apt-get install wireguard"
+    echo "  2. Ensure /dev/net/tun is available"
+    echo "  3. Add to docker-compose:"
+    echo "     devices:"
+    echo "       - /dev/net/tun:/dev/net/tun"
     echo ""
     echo "The container is now in LOCKDOWN mode - no traffic allowed."
     echo "=========================================="
