@@ -1,0 +1,57 @@
+#!/bin/bash
+
+# This script monitors the wg0 interface in REAL-TIME
+# If wg0 goes down, qBittorrent is IMMEDIATELY killed
+
+echo "Starting real-time VPN kill switch monitor..."
+
+# Function to kill qBittorrent
+kill_qbittorrent() {
+    echo "KILL SWITCH ACTIVATED: Terminating qBittorrent immediately!"
+    killall -9 qbittorrent-nox 2>/dev/null
+    pkill -9 -f qbittorrent 2>/dev/null
+    
+    # Block ALL non-local traffic immediately
+    iptables -D OUTPUT -o wg0 -j ACCEPT 2>/dev/null
+    iptables -D INPUT -i wg0 -j ACCEPT 2>/dev/null
+    
+    # Remove VPN ready marker
+    rm -f /tmp/vpn_ready
+    
+    echo "qBittorrent terminated. All VPN traffic blocked."
+}
+
+# Monitor wg0 interface using ip monitor
+# This provides INSTANT notification when interface state changes
+ip monitor link | while read -r line; do
+    # Check if the line is about wg0
+    if echo "$line" | grep -q "wg0"; then
+        # Check if interface went down
+        if echo "$line" | grep -q "DOWN\|DELETED"; then
+            echo "CRITICAL: wg0 interface went DOWN!"
+            kill_qbittorrent
+        fi
+    fi
+done &
+
+MONITOR_PID=$!
+echo "Real-time monitor started (PID: $MONITOR_PID)"
+
+# Also monitor for loss of connectivity (complementary check)
+while true; do
+    sleep 5
+    
+    # Quick check: is wg0 still up?
+    if ! ip link show wg0 up 2>/dev/null | grep -q "state UP"; then
+        echo "CRITICAL: wg0 is not UP!"
+        kill_qbittorrent
+    fi
+    
+    # Check if qBittorrent is running without VPN ready marker
+    if pgrep -x qbittorrent-nox >/dev/null; then
+        if [ ! -f /tmp/vpn_ready ]; then
+            echo "CRITICAL: qBittorrent running without VPN marker!"
+            kill_qbittorrent
+        fi
+    fi
+done
