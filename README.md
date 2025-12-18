@@ -9,11 +9,13 @@ A leak-proof qBittorrent container that routes all traffic through WireGuard VPN
 ## Features
 
 - ✅ **Leak-proof VPN**: All qBittorrent traffic forced through WireGuard
+- ✅ **Real-time Kill Switch**: Instant termination if wg0 drops (no polling delay)
+- ✅ **Multi-layer Monitoring**: `ip monitor` for instant interface state changes + periodic health checks
 - ✅ **Local Network Access**: WebUI accessible from local networks without VPN
 - ✅ **Port Forwarding**: Support for VPN provider port forwarding
 - ✅ **Auto-updates**: Automatically rebuilds when LinuxServer.io updates their base image
 - ✅ **Multi-arch**: Supports AMD64 and ARM64
-- ✅ **Health Monitoring**: Built-in VPN connection monitoring
+- ✅ **Policy Routing**: Forces default route through wg0 with no fallback
 - ✅ **Based on LinuxServer.io**: Uses the trusted linuxserver/qbittorrent base
 
 ## Quick Start
@@ -144,6 +146,15 @@ docker exec qbittorrent-vpn iptables -L -v -n
 
 ### WireGuard Not Starting
 
+**Error**: `FATAL ERROR: WireGuard config not found!`
+
+**Solution**: Create your WireGuard config file:
+
+```bash
+mkdir -p config/wireguard
+# Add your wg0.conf file to config/wireguard/
+```
+
 **Error**: `Failed to load WireGuard kernel module`
 
 **Solution**: Install WireGuard on your Docker host:
@@ -155,6 +166,25 @@ sudo apt-get install wireguard
 # If kernel module isn't available, install DKMS version
 sudo apt-get install wireguard-dkms
 ```
+
+**Error**: `VPN verification failed`
+
+**Solution**: This means WireGuard started but can't reach the internet. Check:
+1. Your WireGuard config is correct
+2. Your VPN provider's server is online
+3. Firewall on Docker host isn't blocking UDP traffic
+
+### Container in Lockdown Mode
+
+If you see "The container is now in LOCKDOWN mode", this means:
+- The container detected a critical error (missing config, VPN failure, etc.)
+- All traffic is blocked as a safety measure
+- qBittorrent will NOT start
+
+To fix:
+1. Check logs: `docker logs qbittorrent-vpn`
+2. Fix the underlying issue (add config, check VPN, etc.)
+3. Restart container: `docker-compose restart`
 
 ### Can't Access WebUI
 
@@ -199,11 +229,32 @@ Any VPN provider that offers WireGuard configs will work. Just save the config a
 
 ### Kill Switch
 
-The container implements a strict kill switch:
-- Default policy: **DROP** all traffic
-- Only allows traffic through WireGuard interface
-- Local network access for WebUI only
-- No DNS leaks (DNS requests go through VPN)
+The container implements a multi-layer, real-time kill switch:
+
+**Layer 1 - Real-time Interface Monitoring**
+- Uses `ip monitor link` which provides **instant** notifications when wg0 state changes
+- No polling delay - the moment wg0 goes DOWN, qBittorrent is killed
+- Cannot be bypassed or delayed
+
+**Layer 2 - Real-time Route Monitoring**
+- Uses `ip monitor route` to detect route deletions instantly
+- If default route through wg0 disappears, qBittorrent is terminated immediately
+
+**Layer 3 - Policy Routing**
+- Default route is forced through wg0 with no fallback
+- If wg0 is down, there is literally no route to the internet
+
+**Layer 4 - Periodic Health Checks (5-second intervals)**
+- Interface state verification
+- Internet connectivity through wg0
+- WireGuard handshake staleness detection (kills if >3 minutes old)
+- qBittorrent process validation
+
+**Layer 5 - Firewall DROP Policy**
+- All non-VPN traffic blocked by default
+- Only wg0 and local networks allowed
+
+**Result**: If VPN fails, qBittorrent is terminated within **milliseconds** and has no network access whatsoever.
 
 ### Network Isolation
 
