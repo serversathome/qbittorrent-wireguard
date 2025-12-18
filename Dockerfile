@@ -1,28 +1,20 @@
-FROM ghcr.io/linuxserver/qbittorrent:latest
+# Base image (Alpine-based)
+FROM linuxserver/qbittorrent:latest
 
-# Install WireGuard and networking tools (Alpine Linux)
-RUN apk add --no-cache \
-    wireguard-tools \
-    wireguard-go \
-    iptables \
-    ip6tables \
-    iproute2 \
-    curl \
-    bash \
-    openresolv
+USER root
 
-# Copy startup script
-COPY root/ /
+# Install WireGuard + utilities
+RUN apk add --no-cache wireguard-tools iptables iproute2 bash curl
 
-# Make scripts executable
-RUN chmod +x /etc/cont-init.d/50-wireguard \
-             /etc/cont-init.d/60-qbittorrent-config \
-             /etc/cont-init.d/99-qbittorrent-wait \
-             /etc/services.d/*/run 2>/dev/null || true
+# Copy entrypoint
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-# Expose qBittorrent ports
-EXPOSE 8080 6881 6881/udp
+# Expose WebUI port only (torrent port optional via VPN forwarding)
+EXPOSE 8080
 
-# Health check
-HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080 || exit 1
+# Healthcheck - verify VPN connectivity
+HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=3 \
+  CMD ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 || exit 1
+
+ENTRYPOINT ["/entrypoint.sh"]
