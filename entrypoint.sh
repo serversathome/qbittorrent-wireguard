@@ -3,8 +3,8 @@ set -e
 
 WG_CONF="/config/wg0.conf"
 WG_INTERFACE="wg0"
-QBIT_CONF="/config/qBittorrent/qBittorrent.conf"
 CHECK_HOST="1.1.1.1"
+QBIT_CONF="/config/qBittorrent/qBittorrent.conf"
 
 # Ensure WireGuard config exists
 if [ ! -f "$WG_CONF" ]; then
@@ -12,8 +12,8 @@ if [ ! -f "$WG_CONF" ]; then
   exit 1
 fi
 
-echo "[INFO] Bringing up WireGuard..."
-# Disable DNS update to avoid Alpine resolvconf issues
+echo "[INFO] Bringing up WireGuard interface..."
+export WG_QUICK_NO_RESOLVCONF=1
 wg-quick up "$WG_CONF" || {
   echo "[ERROR] Failed to bring up WireGuard interface."
   exit 1
@@ -35,13 +35,13 @@ iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
 iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
 iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
 
-# Allow traffic over VPN interface
+# Allow VPN traffic only
 iptables -A OUTPUT -o "$WG_INTERFACE" -j ACCEPT
 
 # Drop everything else (killswitch)
 iptables -A OUTPUT -j DROP
 
-# Set static DNS to avoid resolvconf issues
+# Optional: set static DNS to ensure container can resolve even if VPN fails
 echo "nameserver 1.1.1.1" > /etc/resolv.conf
 echo "nameserver 8.8.8.8" >> /etc/resolv.conf
 
@@ -52,7 +52,7 @@ if ! ping -c 1 -W 2 "$CHECK_HOST" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Configure qBittorrent listen port if VPN_PORT_FORWARD is set
+# Configure qBittorrent port if VPN port forward env is set
 if [ -n "$VPN_PORT_FORWARD" ]; then
   echo "[INFO] Setting qBittorrent listen port to $VPN_PORT_FORWARD"
   mkdir -p "$(dirname "$QBIT_CONF")"
@@ -70,7 +70,7 @@ if [ -n "$VPN_PORT_FORWARD" ]; then
   iptables -A INPUT -i "$WG_INTERFACE" -p udp --dport "$VPN_PORT_FORWARD" -j ACCEPT
 fi
 
-echo "[INFO] VPN up and killswitch active — starting watchdog..."
+echo "[INFO] VPN up, killswitch active — starting watchdog..."
 
 # --- VPN watchdog: monitors connectivity every 60s ---
 (
