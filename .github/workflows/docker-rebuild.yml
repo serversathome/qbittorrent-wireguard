@@ -1,0 +1,75 @@
+name: Rebuild on Base Image Update
+
+on:
+  schedule:
+    - cron: "0 6 * * *"  # Check every day at 06:00 UTC
+  workflow_dispatch:      # Allow manual trigger
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    env:
+      BASE_IMAGE: linuxserver/qbittorrent:latest
+      TARGET_IMAGE: serversathome/qbittorrent-wireguard
+      DIGEST_FILE: .base_digest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Get latest base image digest
+        id: digest
+        run: |
+          echo "Fetching digest for $BASE_IMAGE"
+          DIGEST=$(skopeo inspect docker://$BASE_IMAGE --format '{{ .Digest }}')
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+
+      - name: Compare with last known digest
+        id: compare
+        run: |
+          echo "Previous digest (if exists):"
+          if [ -f $DIGEST_FILE ]; then cat $DIGEST_FILE; fi
+          if [ ! -f $DIGEST_FILE ] || [ "$(cat $DIGEST_FILE)" != "${{ steps.digest.outputs.digest }}" ]; then
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+            echo "${{ steps.digest.outputs.digest }}" > $DIGEST_FILE
+          else
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit new digest file if updated
+        if: steps.compare.outputs.update_needed == 'true'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add $DIGEST_FILE
+          git commit -m "Base image updated to digest ${{ steps.digest.outputs.digest }}"
+          git push
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and Push Updated Image
+        if: steps.compare.outputs.update_needed == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.TARGET_IMAGE }}:latest
+            ${{ env.TARGET_IMAGE }}:${{ github.sha }}
