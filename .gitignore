@@ -1,15 +1,31 @@
-# Docker
-.env
-*.log
-
-# Config files (don't commit your VPN config!)
+# WireGuard configs (contain private keys - NEVER commit these!)
 config/
-downloads/
+*.conf
+wg0.conf
 
-# OS
+# qBittorrent data
+downloads/
+media/
+
+# Docker volumes
+data/
+
+# Environment files (may contain sensitive data)
+.env
+.env.local
+
+# OS files
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~
 
-# IDE
+# IDE files
 .vscode/
 .idea/
+*.iml
+
+# Logs
+*.log
+logs/
