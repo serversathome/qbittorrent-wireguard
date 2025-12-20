@@ -15,19 +15,22 @@ if [ ! -f "$WG_CONF" ]; then
   exit 1
 fi
 
-# Create modified WireGuard config with Table = off to avoid sysctl issues
-WG_TEMP="/tmp/wg0-nodns.conf"
-{
-  grep -v "^DNS" "$WG_CONF"
-  echo ""
-  echo "Table = off"
-} > "$WG_TEMP"
-
-# Set proper permissions
-chmod 600 "$WG_TEMP"
-
-# Extract DNS servers if present in original config
+# Extract configuration values
+echo "[INFO] Parsing WireGuard configuration..."
+WG_ADDRESS=$(grep "^Address" "$WG_CONF" | cut -d= -f2 | tr -d ' ')
+WG_PRIVATE_KEY=$(grep "^PrivateKey" "$WG_CONF" | cut -d= -f2 | tr -d ' ')
+WG_MTU=$(grep "^MTU" "$WG_CONF" | cut -d= -f2 | tr -d ' ' || echo "1420")
 DNS_SERVERS=$(grep "^DNS" "$WG_CONF" | head -1 | cut -d= -f2 | tr -d ' ' || echo "1.1.1.1,8.8.8.8")
+
+# Peer configuration
+PEER_PUBLIC_KEY=$(grep "^PublicKey" "$WG_CONF" | cut -d= -f2 | tr -d ' ')
+PEER_PRESHARED_KEY=$(grep "^PresharedKey" "$WG_CONF" | cut -d= -f2 | tr -d ' ')
+PEER_ENDPOINT=$(grep "^Endpoint" "$WG_CONF" | cut -d= -f2 | tr -d ' ')
+PEER_ALLOWED_IPS=$(grep "^AllowedIPs" "$WG_CONF" | cut -d= -f2 | tr -d ' ')
+PEER_KEEPALIVE=$(grep "^PersistentKeepalive" "$WG_CONF" | cut -d= -f2 | tr -d ' ' || echo "25")
+
+# Extract just the endpoint IP (without port)
+VPN_ENDPOINT=$(echo "$PEER_ENDPOINT" | cut -d: -f1)
 
 echo "[INFO] Configuring DNS: $DNS_SERVERS"
 
@@ -37,14 +40,39 @@ echo "$DNS_SERVERS" | tr ',' '\n' | while read -r dns; do
   [ -n "$dns" ] && echo "nameserver $dns" >> /etc/resolv.conf
 done
 
-# Bring up WireGuard interface
+# Create WireGuard interface
+echo "[INFO] Creating WireGuard interface..."
+ip link add dev "$WG_INTERFACE" type wireguard
+
+# Set addresses (handle both IPv4 and IPv6)
+echo "[INFO] Setting addresses: $WG_ADDRESS"
+echo "$WG_ADDRESS" | tr ',' '\n' | while read -r addr; do
+  ip address add "$addr" dev "$WG_INTERFACE"
+done
+
+# Set MTU
+ip link set mtu "$WG_MTU" dev "$WG_INTERFACE"
+
+# Configure WireGuard
+echo "[INFO] Configuring WireGuard peer..."
+wg set "$WG_INTERFACE" private-key <(echo "$WG_PRIVATE_KEY")
+
+if [ -n "$PEER_PRESHARED_KEY" ]; then
+  wg set "$WG_INTERFACE" peer "$PEER_PUBLIC_KEY" \
+    preshared-key <(echo "$PEER_PRESHARED_KEY") \
+    endpoint "$PEER_ENDPOINT" \
+    allowed-ips "$PEER_ALLOWED_IPS" \
+    persistent-keepalive "$PEER_KEEPALIVE"
+else
+  wg set "$WG_INTERFACE" peer "$PEER_PUBLIC_KEY" \
+    endpoint "$PEER_ENDPOINT" \
+    allowed-ips "$PEER_ALLOWED_IPS" \
+    persistent-keepalive "$PEER_KEEPALIVE"
+fi
+
+# Bring up the interface
 echo "[INFO] Bringing up WireGuard interface..."
-wg-quick up "$WG_TEMP" || {
-  echo "[ERROR] Failed to bring up WireGuard interface."
-  cat "$WG_TEMP"
-  rm -f "$WG_TEMP"
-  exit 1
-}
+ip link set up dev "$WG_INTERFACE"
 
 # Wait for interface to be ready
 sleep 2
@@ -52,27 +80,26 @@ sleep 2
 # Verify interface is up
 if ! ip link show "$WG_INTERFACE" >/dev/null 2>&1; then
   echo "[ERROR] WireGuard interface $WG_INTERFACE not found after startup"
-  wg-quick down "$WG_INTERFACE" 2>/dev/null || true
-  rm -f "$WG_TEMP"
   exit 1
 fi
 
 echo "[INFO] WireGuard interface is up:"
 wg show "$WG_INTERFACE"
 
-# Set up routing manually since we disabled automatic routing with Table = off
+# Set up routing
 echo "[INFO] Setting up VPN routing..."
 
-# Get the default gateway for the physical interface (to reach VPN endpoint)
+# Get the default gateway for the physical interface
 DEFAULT_GW=$(ip route | grep default | awk '{print $3}' | head -1)
-VPN_ENDPOINT=$(grep "^Endpoint" "$WG_CONF" | head -1 | cut -d= -f2 | tr -d ' ' | cut -d: -f1)
 
 if [ -n "$VPN_ENDPOINT" ] && [ -n "$DEFAULT_GW" ]; then
   # Add route for VPN endpoint through default gateway
+  echo "[INFO] Adding route for VPN endpoint $VPN_ENDPOINT via $DEFAULT_GW"
   ip route add "$VPN_ENDPOINT/32" via "$DEFAULT_GW" 2>/dev/null || true
 fi
 
 # Route all other traffic through VPN
+echo "[INFO] Setting default route through VPN interface"
 ip route add default dev "$WG_INTERFACE" metric 100
 
 echo "[INFO] Setting up killswitch firewall..."
@@ -134,15 +161,11 @@ if ! ping -c 3 -W 5 "$CHECK_HOST" >/dev/null 2>&1; then
   ip route show
   echo "[DEBUG] WireGuard status:"
   wg show "$WG_INTERFACE"
-  wg-quick down "$WG_INTERFACE" 2>/dev/null || true
-  rm -f "$WG_TEMP"
+  ip link delete dev "$WG_INTERFACE" 2>/dev/null || true
   exit 1
 fi
 
 echo "[INFO] VPN connectivity verified ✓"
-
-# Clean up temp file
-rm -f "$WG_TEMP"
 
 # Configure qBittorrent port forwarding if set
 if [ -n "$VPN_PORT_FORWARD" ]; then
@@ -173,7 +196,7 @@ cleanup() {
   pkill -15 qbittorrent-nox 2>/dev/null || true
   sleep 2
   pkill -9 qbittorrent-nox 2>/dev/null || true
-  wg-quick down "$WG_INTERFACE" 2>/dev/null || true
+  ip link delete dev "$WG_INTERFACE" 2>/dev/null || true
   exit 0
 }
 
@@ -185,7 +208,7 @@ trap cleanup SIGTERM SIGINT
     if ! ping -c 1 -W 3 "$CHECK_HOST" >/dev/null 2>&1; then
       echo "[WARN] Lost VPN connectivity — shutting down."
       pkill -9 qbittorrent-nox || true
-      wg-quick down "$WG_INTERFACE" 2>/dev/null || true
+      ip link delete dev "$WG_INTERFACE" 2>/dev/null || true
       exit 1
     fi
   done
