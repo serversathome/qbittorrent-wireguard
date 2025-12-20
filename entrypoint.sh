@@ -119,10 +119,23 @@ if [ -n "$VPN_PORT_FORWARD" ]; then
   mkdir -p "$(dirname "$QBIT_CONF")"
 
   if [ -f "$QBIT_CONF" ]; then
+    # Remove existing port configs
     sed -i '/Connection\\PortRangeMin=/d' "$QBIT_CONF"
+    sed -i '/Session\\Port=/d' "$QBIT_CONF"
+    
+    # Add port config under [BitTorrent] section
+    sed -i "/^\[BitTorrent\]/a Session\\\\Port=$VPN_PORT_FORWARD" "$QBIT_CONF"
+    
+    # Also add under [Preferences] section for compatibility
     sed -i "/^\[Preferences\]/a Connection\\\\PortRangeMin=$VPN_PORT_FORWARD" "$QBIT_CONF"
   else
+    # Create new config file
     cat > "$QBIT_CONF" << EOF
+[BitTorrent]
+Session\Port=$VPN_PORT_FORWARD
+Session\Interface=wg0
+Session\InterfaceName=wg0
+
 [Preferences]
 Connection\\PortRangeMin=$VPN_PORT_FORWARD
 EOF
