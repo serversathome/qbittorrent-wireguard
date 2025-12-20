@@ -29,18 +29,18 @@ done
 
 echo "[INFO] Setting up killswitch firewall BEFORE VPN..."
 
-# Set default policies to DROP before starting VPN
+# Set default policies
 iptables -P INPUT DROP
 iptables -P FORWARD DROP  
 iptables -P OUTPUT DROP
 
+# CRITICAL: Allow established connections FIRST (before any other rules)
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
 # Allow loopback
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
-
-# Allow established/related connections
-iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
 # Allow local network access (for WebUI and local services)
 iptables -A INPUT -s 10.0.0.0/8 -j ACCEPT
@@ -50,11 +50,6 @@ iptables -A INPUT -s 192.168.0.0/16 -j ACCEPT
 iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
 iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
 iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
-
-# Allow WebUI port from local networks
-iptables -A INPUT -p tcp --dport "$WEBUI_PORT" -s 10.0.0.0/8 -j ACCEPT
-iptables -A INPUT -p tcp --dport "$WEBUI_PORT" -s 172.16.0.0/12 -j ACCEPT
-iptables -A INPUT -p tcp --dport "$WEBUI_PORT" -s 192.168.0.0/16 -j ACCEPT
 
 # Allow DNS queries
 iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
