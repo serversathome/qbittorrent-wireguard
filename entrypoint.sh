@@ -1,6 +1,3 @@
-Here's the complete entrypoint.sh script:
-
-```bash
 #!/usr/bin/env bash
 set -e
 
@@ -167,4 +164,3 @@ echo "[INFO] Starting qBittorrent WebUI on port $WEBUI_PORT..."
 chown -R abc:abc /config 2>/dev/null || true
 
 exec s6-setuidgid abc qbittorrent-nox --webui-port="$WEBUI_PORT"
-```
