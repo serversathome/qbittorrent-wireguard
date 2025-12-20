@@ -27,36 +27,11 @@ echo "$DNS_SERVERS" | tr ',' '\n' | while read -r dns; do
   [ -n "$dns" ] && echo "nameserver $dns" >> /etc/resolv.conf
 done
 
-# Bring up WireGuard interface using wg-quick but skip DNS management
-echo "[INFO] Bringing up WireGuard interface..."
-SKIP_DNS_SETUP=1 wg-quick up "$WG_CONF" || {
-  echo "[ERROR] Failed to bring up WireGuard interface."
-  exit 1
-}
+echo "[INFO] Setting up killswitch firewall BEFORE VPN..."
 
-# Wait for interface to be ready
-sleep 3
-
-# Verify interface is up
-if ! ip link show "$WG_INTERFACE" >/dev/null 2>&1; then
-  echo "[ERROR] WireGuard interface $WG_INTERFACE not found after startup"
-  wg-quick down "$WG_CONF" 2>/dev/null || true
-  exit 1
-fi
-
-echo "[INFO] WireGuard interface is up:"
-wg show "$WG_INTERFACE"
-
-echo "[INFO] Setting up killswitch firewall..."
-
-# Flush old rules
-iptables -F
-iptables -t nat -F
-iptables -X
-
-# Default policies
+# Set default policies to DROP before starting VPN
 iptables -P INPUT DROP
-iptables -P FORWARD DROP
+iptables -P FORWARD DROP  
 iptables -P OUTPUT DROP
 
 # Allow loopback
@@ -81,13 +56,41 @@ iptables -A INPUT -p tcp --dport "$WEBUI_PORT" -s 10.0.0.0/8 -j ACCEPT
 iptables -A INPUT -p tcp --dport "$WEBUI_PORT" -s 172.16.0.0/12 -j ACCEPT
 iptables -A INPUT -p tcp --dport "$WEBUI_PORT" -s 192.168.0.0/16 -j ACCEPT
 
-# Allow all traffic through VPN interface
-iptables -A INPUT -i "$WG_INTERFACE" -j ACCEPT
-iptables -A OUTPUT -o "$WG_INTERFACE" -j ACCEPT
-
 # Allow DNS queries
 iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
 iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+
+# Extract VPN endpoint and allow traffic to it
+VPN_ENDPOINT=$(grep "^Endpoint" "$WG_CONF" | head -1 | cut -d= -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -d: -f1)
+if [ -n "$VPN_ENDPOINT" ]; then
+  echo "[INFO] Allowing traffic to VPN endpoint: $VPN_ENDPOINT"
+  iptables -A OUTPUT -d "$VPN_ENDPOINT" -j ACCEPT
+fi
+
+echo "[INFO] Killswitch active - bringing up VPN interface..."
+
+# Bring up WireGuard interface using wg-quick
+wg-quick up "$WG_CONF" || {
+  echo "[ERROR] Failed to bring up WireGuard interface."
+  exit 1
+}
+
+# Wait for interface to be ready
+sleep 3
+
+# Verify interface is up
+if ! ip link show "$WG_INTERFACE" >/dev/null 2>&1; then
+  echo "[ERROR] WireGuard interface $WG_INTERFACE not found after startup"
+  wg-quick down "$WG_CONF" 2>/dev/null || true
+  exit 1
+fi
+
+echo "[INFO] WireGuard interface is up:"
+wg show "$WG_INTERFACE"
+
+# Now allow all traffic through VPN interface
+iptables -A INPUT -i "$WG_INTERFACE" -j ACCEPT
+iptables -A OUTPUT -o "$WG_INTERFACE" -j ACCEPT
 
 echo "[INFO] Firewall rules applied (killswitch active)."
 
