@@ -1,22 +1,21 @@
 services:
-  qbittorrent-vpn:
+  qbittorrent-wireguard:
     image: serversathome/qbittorrent-wireguard:latest
-    container_name: qbittorrent-vpn
+    container_name: qbittorrent-wireguard
     cap_add:
       - NET_ADMIN
-    network_mode: bridge
+      - SYS_MODULE
     ports:
-      - "8080:8080"          # WebUI (LAN access)
+      - 8080:8080
       # Optional forwarded ports if supported by your VPN:
-      # - "${VPN_PORT_FORWARD}:${VPN_PORT_FORWARD}/tcp"
-      # - "${VPN_PORT_FORWARD}:${VPN_PORT_FORWARD}/udp"
+      # - 12345:12345
     environment:
-      - PUID=1000
-      - PGID=1000
+      - PUID=568
+      - PGID=568
       - UMASK_SET=022
       - WEBUI_PORT=8080
       - VPN_PORT_FORWARD=51820  # Optional: your VPN-assigned port
     volumes:
       - ./config:/config
-      - ./downloads:/downloads
+      - /media:/media
     restart: unless-stopped
