@@ -35,11 +35,9 @@ echo "[INFO] Bringing up WireGuard interface..."
 wg-quick up "$WG_TEMP" || {
   echo "[ERROR] Failed to bring up WireGuard interface."
   cat "$WG_TEMP"
+  rm -f "$WG_TEMP"
   exit 1
 }
-
-# Clean up temp file
-rm -f "$WG_TEMP"
 
 # Wait for interface to be ready
 sleep 3
@@ -47,6 +45,8 @@ sleep 3
 # Verify interface is up
 if ! ip link show "$WG_INTERFACE" >/dev/null 2>&1; then
   echo "[ERROR] WireGuard interface $WG_INTERFACE not found after startup"
+  wg-quick down "$WG_TEMP" 2>/dev/null || true
+  rm -f "$WG_TEMP"
   exit 1
 fi
 
@@ -91,7 +91,7 @@ iptables -A INPUT -p tcp --dport "$WEBUI_PORT" -s 192.168.0.0/16 -j ACCEPT
 iptables -A INPUT -i "$WG_INTERFACE" -j ACCEPT
 iptables -A OUTPUT -o "$WG_INTERFACE" -j ACCEPT
 
-# Allow DNS queries (needed during startup)
+# Allow DNS queries (needed during startup and for VPN)
 iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
 iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
 
@@ -103,11 +103,15 @@ if ! ping -c 3 -W 5 "$CHECK_HOST" >/dev/null 2>&1; then
   echo "[ERROR] VPN appears down — cannot reach $CHECK_HOST."
   ip addr show "$WG_INTERFACE"
   ip route show
-  wg-quick down "$WG_TEMP" 2>/dev/null || wg-quick down "$WG_CONF"
+  wg-quick down "$WG_INTERFACE" 2>/dev/null || true
+  rm -f "$WG_TEMP"
   exit 1
 fi
 
 echo "[INFO] VPN connectivity verified ✓"
+
+# Clean up temp file after successful VPN setup
+rm -f "$WG_TEMP"
 
 # Configure qBittorrent port forwarding if set
 if [ -n "$VPN_PORT_FORWARD" ]; then
@@ -136,13 +140,25 @@ fi
 
 echo "[INFO] Starting VPN watchdog in background..."
 
+# Cleanup function for graceful shutdown
+cleanup() {
+  echo "[INFO] Shutting down..."
+  pkill -15 qbittorrent-nox 2>/dev/null || true
+  sleep 2
+  pkill -9 qbittorrent-nox 2>/dev/null || true
+  wg-quick down "$WG_INTERFACE" 2>/dev/null || true
+  exit 0
+}
+
+trap cleanup SIGTERM SIGINT
+
 # VPN watchdog: monitors connectivity
 (
   while sleep 60; do
     if ! ping -c 1 -W 3 "$CHECK_HOST" >/dev/null 2>&1; then
       echo "[WARN] Lost VPN connectivity — shutting down."
       pkill -9 qbittorrent-nox || true
-      wg-quick down "$WG_CONF" 2>/dev/null || true
+      wg-quick down "$WG_INTERFACE" 2>/dev/null || true
       exit 1
     fi
   done
