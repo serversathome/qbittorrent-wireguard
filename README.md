@@ -1,3 +1,8 @@
+> [!WARNING]
+> ⚠️ **Beta Release**
+> This project is in **beta**! Features may change, and bugs are likely. Use with caution and report issues in the issue tracker.
+
+
 # qBittorrent with WireGuard VPN & Killswitch
 
 A Docker container that runs qBittorrent with a built-in WireGuard VPN connection and killswitch. All torrent traffic is routed through the VPN, and if the VPN connection drops, qBittorrent is automatically shut down to prevent any leaks.
