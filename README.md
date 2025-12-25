@@ -7,6 +7,16 @@
 
 A Docker container that runs qBittorrent with a built-in WireGuard VPN connection and killswitch. All torrent traffic is routed through the VPN, and if the VPN connection drops, qBittorrent is automatically shut down to prevent any leaks.
 
+# Why does this exist?
+
+There are many options to get qBittorrent traffic routed through a VPN, but I didn't think any of them were particularly easy. What I wanted was a single-container solution where I can download torrents through qBittorrent while using a VPN and if the VPN failed for any reason my traffic would stop. Bonus points if when the VPN came back online the container traffic would resume. I also didn't like how complicated the docker compose files were for some of the existing solutions, so I wanted my container's compose file to be as few lines as possible.
+
+I also noticed there were compatibility issues with certain VPN providers. I can't solve everything, but if a VPN provider could give you a wireguard file that should *just work* for my container.
+
+To create this, I told Claude I want to take the linuxserver.io qBittorrent image and bolt on some init code to route all traffic through a VPN and build a kill-switch into it so there is no way for traffic to leak (the prompt was way more detailed than this but that is the gist). So this solution is basically linuxserver.io qBit + some routing rules which pushes all traffic through the VPN **except** traffic to the standard LAN IP CIDRs (as well as tailscale and netbird for those of you with fancy VPNs to tunnel back into your network) so the webUI works. 
+
+Please dig into this code if you know what you are doing and make suggestions where you see improvement is possible. 
+
 ## Features
 
 - ✅ **Built-in WireGuard VPN** - No separate VPN container needed
