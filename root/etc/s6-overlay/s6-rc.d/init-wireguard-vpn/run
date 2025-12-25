@@ -74,15 +74,54 @@ iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
 iptables -A OUTPUT -d 100.64.0.0/10 -j ACCEPT  # CGNAT range (includes Tailscale)
 iptables -A OUTPUT -d 100.84.0.0/16 -j ACCEPT  # Netbird
 
-# Allow DNS queries
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+# Allow DNS queries to public DNS servers (for resolving VPN endpoint hostname)
+iptables -A OUTPUT -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -d 1.1.1.1 -p tcp --dport 53 -j ACCEPT
+iptables -A OUTPUT -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
+iptables -A OUTPUT -d 1.0.0.1 -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -d 1.0.0.1 -p tcp --dport 53 -j ACCEPT
 
 # Extract VPN endpoint and allow traffic to it
 VPN_ENDPOINT=$(grep "^Endpoint" "$WG_CONF" | head -1 | cut -d= -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -d: -f1)
 if [ -n "$VPN_ENDPOINT" ]; then
   echo "[INFO] Allowing traffic to VPN endpoint: $VPN_ENDPOINT"
-  iptables -A OUTPUT -d "$VPN_ENDPOINT" -j ACCEPT
+
+  # Check if endpoint is a hostname (contains letters) or IP address
+  if echo "$VPN_ENDPOINT" | grep -qE '[a-zA-Z]'; then
+    # It's a hostname - resolve it to IP address using public DNS
+    echo "[INFO] Resolving hostname $VPN_ENDPOINT to IP address..."
+
+    # Temporarily use public DNS for resolution
+    echo "nameserver 1.1.1.1" > /etc/resolv.conf.tmp
+    echo "nameserver 8.8.8.8" >> /etc/resolv.conf.tmp
+
+    # Try multiple methods to resolve the hostname
+    VPN_ENDPOINT_IP=$(getent ahostsv4 "$VPN_ENDPOINT" 2>/dev/null | head -1 | awk '{print $1}')
+
+    if [ -z "$VPN_ENDPOINT_IP" ]; then
+      # Fallback: use nslookup with public DNS
+      VPN_ENDPOINT_IP=$(nslookup "$VPN_ENDPOINT" 1.1.1.1 2>/dev/null | grep -A1 "Name:" | grep "Address:" | awk '{print $2}' | head -1)
+    fi
+
+    if [ -z "$VPN_ENDPOINT_IP" ]; then
+      # Last resort: use dig if available
+      VPN_ENDPOINT_IP=$(dig +short "$VPN_ENDPOINT" @1.1.1.1 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+    fi
+
+    if [ -n "$VPN_ENDPOINT_IP" ]; then
+      echo "[INFO] Resolved $VPN_ENDPOINT to $VPN_ENDPOINT_IP"
+      iptables -A OUTPUT -d "$VPN_ENDPOINT_IP" -j ACCEPT
+    else
+      echo "[ERROR] Failed to resolve VPN endpoint hostname: $VPN_ENDPOINT"
+      echo "[ERROR] Cannot reach DNS servers to resolve hostname"
+      echo "[ERROR] Please check your network connectivity or use an IP address in your WireGuard config"
+      exit 1
+    fi
+  else
+    # It's already an IP address
+    iptables -A OUTPUT -d "$VPN_ENDPOINT" -j ACCEPT
+  fi
 fi
 
 echo "[INFO] Killswitch active - bringing up VPN interface..."
