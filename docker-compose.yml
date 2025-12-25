@@ -17,8 +17,8 @@ services:
       - PGID=568
       - UMASK_SET=022
       - WEBUI_PORT=8080
-      - VPN_PORT_FORWARD=51820  # Optional: your VPN-assigned port
+      # - VPN_PORT_FORWARD=51820  # Optional: your VPN-assigned port
     volumes:
-      - ./config:/config
-      - /media:/media
+      - /mnt/tank/configs/qbittorrent-wireguard:/config
+      - /mnt/tank/media:/media
     restart: unless-stopped
