@@ -1,0 +1,212 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+
+set -e
+
+WG_CONF="${WG_CONF:-/config/wg0.conf}"
+WG_INTERFACE="wg0"
+CHECK_HOST="1.1.1.1"
+QBIT_CONF="/config/qBittorrent/qBittorrent.conf"
+WEBUI_PORT="${WEBUI_PORT:-8080}"
+
+echo "========================================"
+echo "WireGuard VPN Setup"
+echo "========================================"
+
+# Verify config exists
+if [ ! -f "$WG_CONF" ]; then
+  echo "[ERROR] WireGuard config not found at $WG_CONF"
+  echo "[ERROR] Please place your wg0.conf file in the config directory"
+  exit 1
+fi
+
+echo "[INFO] Found WireGuard config at $WG_CONF"
+
+# Extract DNS from config before bringing up interface
+DNS_SERVERS=$(grep "^DNS" "$WG_CONF" | head -1 | cut -d= -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "1.1.1.1,8.8.8.8")
+DNS_SERVERS=$(echo "$DNS_SERVERS" | sed 's/[[:space:]]*,[[:space:]]*/,/g')
+
+echo "[INFO] Configuring DNS: $DNS_SERVERS"
+
+# Set DNS manually before bringing up VPN
+echo "# WireGuard DNS" > /etc/resolv.conf
+echo "$DNS_SERVERS" | tr ',' '\n' | while read -r dns; do
+  [ -n "$dns" ] && echo "nameserver $dns" >> /etc/resolv.conf
+done
+
+# CRITICAL FIX: Dynamically detect the default gateway
+GATEWAY=$(ip route | grep default | awk '{print $3}' | head -1)
+PRIMARY_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+
+if [ -z "$GATEWAY" ] || [ -z "$PRIMARY_INTERFACE" ]; then
+  echo "[ERROR] Could not detect default gateway or interface"
+  ip route show
+  exit 1
+fi
+
+echo "[INFO] Detected gateway: $GATEWAY via interface: $PRIMARY_INTERFACE"
+
+echo "[INFO] Setting up killswitch firewall BEFORE VPN..."
+
+# Set default policies to DROP before starting VPN
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT DROP
+
+# CRITICAL: Allow established connections FIRST (before any other rules)
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# Allow loopback
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
+# Allow local network access (for WebUI and local services)
+iptables -A INPUT -s 10.0.0.0/8 -j ACCEPT
+iptables -A INPUT -s 172.16.0.0/12 -j ACCEPT
+iptables -A INPUT -s 192.168.0.0/16 -j ACCEPT
+iptables -A INPUT -s 100.64.0.0/10 -j ACCEPT  # CGNAT range (includes Tailscale)
+iptables -A INPUT -s 100.84.0.0/16 -j ACCEPT  # Netbird
+
+iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
+iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
+iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
+iptables -A OUTPUT -d 100.64.0.0/10 -j ACCEPT  # CGNAT range (includes Tailscale)
+iptables -A OUTPUT -d 100.84.0.0/16 -j ACCEPT  # Netbird
+
+# Allow DNS queries
+iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+
+# Extract VPN endpoint and allow traffic to it
+VPN_ENDPOINT=$(grep "^Endpoint" "$WG_CONF" | head -1 | cut -d= -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -d: -f1)
+if [ -n "$VPN_ENDPOINT" ]; then
+  echo "[INFO] Allowing traffic to VPN endpoint: $VPN_ENDPOINT"
+  iptables -A OUTPUT -d "$VPN_ENDPOINT" -j ACCEPT
+fi
+
+echo "[INFO] Killswitch active - bringing up VPN interface..."
+
+# Bring up WireGuard interface using wg-quick
+wg-quick up "$WG_CONF" || {
+  echo "[ERROR] Failed to bring up WireGuard interface."
+  exit 1
+}
+
+# Wait for interface to be ready
+sleep 3
+
+# Verify interface is up
+if ! ip link show "$WG_INTERFACE" >/dev/null 2>&1; then
+  echo "[ERROR] WireGuard interface $WG_INTERFACE not found after startup"
+  wg-quick down "$WG_CONF" 2>/dev/null || true
+  exit 1
+fi
+
+echo "[INFO] WireGuard interface is up:"
+wg show "$WG_INTERFACE"
+
+# FIX: Ensure local network traffic doesn't go through VPN
+# DYNAMICALLY add routes using detected gateway
+echo "[INFO] Adding local network routing exceptions (via $GATEWAY)..."
+ip route add 10.0.0.0/8 via "$GATEWAY" dev "$PRIMARY_INTERFACE" 2>/dev/null || true
+ip route add 172.16.0.0/12 via "$GATEWAY" dev "$PRIMARY_INTERFACE" 2>/dev/null || true
+ip route add 192.168.0.0/16 via "$GATEWAY" dev "$PRIMARY_INTERFACE" 2>/dev/null || true
+ip route add 100.64.0.0/10 via "$GATEWAY" dev "$PRIMARY_INTERFACE" 2>/dev/null || true  # CGNAT range (includes Tailscale)
+ip route add 100.84.0.0/16 via "$GATEWAY" dev "$PRIMARY_INTERFACE" 2>/dev/null || true  # Netbird
+
+# Also add these to the policy routing table to override VPN routes
+ip route add 10.0.0.0/8 via "$GATEWAY" dev "$PRIMARY_INTERFACE" table 51820 2>/dev/null || true
+ip route add 172.16.0.0/12 via "$GATEWAY" dev "$PRIMARY_INTERFACE" table 51820 2>/dev/null || true
+ip route add 192.168.0.0/16 via "$GATEWAY" dev "$PRIMARY_INTERFACE" table 51820 2>/dev/null || true
+ip route add 100.64.0.0/10 via "$GATEWAY" dev "$PRIMARY_INTERFACE" table 51820 2>/dev/null || true  # CGNAT range (includes Tailscale)
+ip route add 100.84.0.0/16 via "$GATEWAY" dev "$PRIMARY_INTERFACE" table 51820 2>/dev/null || true  # Netbird
+
+# Now allow all traffic through VPN interface
+iptables -A INPUT -i "$WG_INTERFACE" -j ACCEPT
+iptables -A OUTPUT -o "$WG_INTERFACE" -j ACCEPT
+
+echo "[INFO] Firewall rules applied (killswitch active)."
+
+# Check VPN connectivity
+echo "[INFO] Testing VPN connectivity..."
+if ! ping -c 3 -W 5 "$CHECK_HOST" >/dev/null 2>&1; then
+  echo "[ERROR] VPN appears down — cannot reach $CHECK_HOST."
+  ip addr show "$WG_INTERFACE"
+  ip route show
+  wg-quick down "$WG_CONF" 2>/dev/null || true
+  exit 1
+fi
+
+echo "[INFO] VPN connectivity verified ✓"
+
+# Configure qBittorrent WebUI settings for accessibility
+echo "[INFO] Configuring qBittorrent WebUI settings..."
+mkdir -p "$(dirname "$QBIT_CONF")"
+
+if [ ! -f "$QBIT_CONF" ]; then
+  # Create new config file with WebUI defaults
+  cat > "$QBIT_CONF" << 'EOF'
+[Preferences]
+WebUI\HostHeaderValidation=false
+WebUI\LocalHostAuth=false
+
+[BitTorrent]
+Session\Interface=wg0
+Session\InterfaceName=wg0
+EOF
+  chown abc:abc "$QBIT_CONF" 2>/dev/null || true
+  echo "[INFO] Created qBittorrent config with WebUI defaults"
+else
+  # Update existing config to ensure WebUI settings are present
+  if ! grep -q "WebUI\\\\HostHeaderValidation" "$QBIT_CONF"; then
+    sed -i "/^\[Preferences\]/a WebUI\\\\HostHeaderValidation=false" "$QBIT_CONF"
+  fi
+  if ! grep -q "WebUI\\\\LocalHostAuth" "$QBIT_CONF"; then
+    sed -i "/^\[Preferences\]/a WebUI\\\\LocalHostAuth=false" "$QBIT_CONF"
+  fi
+  # Ensure interface is set to wg0
+  if ! grep -q "Session\\\\Interface" "$QBIT_CONF"; then
+    if grep -q "^\[BitTorrent\]" "$QBIT_CONF"; then
+      sed -i "/^\[BitTorrent\]/a Session\\\\Interface=wg0\nSession\\\\InterfaceName=wg0" "$QBIT_CONF"
+    else
+      echo "" >> "$QBIT_CONF"
+      echo "[BitTorrent]" >> "$QBIT_CONF"
+      echo "Session\\Interface=wg0" >> "$QBIT_CONF"
+      echo "Session\\InterfaceName=wg0" >> "$QBIT_CONF"
+    fi
+  fi
+  echo "[INFO] Updated qBittorrent config with required settings"
+fi
+
+# Configure qBittorrent port forwarding if set
+if [ -n "$VPN_PORT_FORWARD" ]; then
+  echo "[INFO] Setting qBittorrent listen port to $VPN_PORT_FORWARD"
+
+  # Remove existing port configs
+  sed -i '/Connection\\PortRangeMin=/d' "$QBIT_CONF"
+  sed -i '/Session\\Port=/d' "$QBIT_CONF"
+
+  # Add port config under [BitTorrent] section
+  sed -i "/^\[BitTorrent\]/a Session\\\\Port=$VPN_PORT_FORWARD" "$QBIT_CONF"
+
+  # Also add under [Preferences] section for compatibility
+  sed -i "/^\[Preferences\]/a Connection\\\\PortRangeMin=$VPN_PORT_FORWARD" "$QBIT_CONF"
+
+  # Allow port through firewall
+  iptables -I INPUT -i "$WG_INTERFACE" -p tcp --dport "$VPN_PORT_FORWARD" -j ACCEPT
+  iptables -I INPUT -i "$WG_INTERFACE" -p udp --dport "$VPN_PORT_FORWARD" -j ACCEPT
+
+  echo "[INFO] Port forwarding configured for port $VPN_PORT_FORWARD"
+fi
+
+echo "========================================"
+echo "WireGuard VPN Setup Complete ✓"
+echo "========================================"
+echo "Interface: $WG_INTERFACE"
+echo "Gateway: $GATEWAY via $PRIMARY_INTERFACE"
+echo "WebUI Port: $WEBUI_PORT"
+if [ -n "$VPN_PORT_FORWARD" ]; then
+  echo "Forwarded Port: $VPN_PORT_FORWARD"
+fi
+echo "========================================"

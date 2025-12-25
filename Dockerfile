@@ -1,5 +1,4 @@
 FROM linuxserver/qbittorrent:latest
-USER root
 
 # Install WireGuard + utilities
 RUN apk add --no-cache wireguard-tools iptables ip6tables iproute2 bash curl
@@ -17,15 +16,15 @@ RUN mv /sbin/sysctl /sbin/sysctl.real && \
     echo '/sbin/sysctl.real "$@" 2>/dev/null || exit 0' >> /sbin/sysctl && \
     chmod +x /sbin/sysctl
 
-# Copy entrypoint
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Copy s6-overlay service files and configuration
+COPY --chmod=755 root/ /
 
 # Expose WebUI port
 EXPOSE 8080
 
-# Healthcheck
+# Healthcheck - verify VPN connectivity
 HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=3 \
   CMD ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 || exit 1
 
-ENTRYPOINT ["/entrypoint.sh"]
+# Keep linuxserver's /init entrypoint (s6-overlay)
+# Our WireGuard setup runs as an s6 init service

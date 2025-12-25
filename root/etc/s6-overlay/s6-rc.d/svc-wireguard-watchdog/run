@@ -1,0 +1,25 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+
+CHECK_HOST="1.1.1.1"
+CHECK_INTERVAL=60
+
+echo "[INFO] Starting WireGuard VPN watchdog (checking every ${CHECK_INTERVAL}s)..."
+
+while sleep "$CHECK_INTERVAL"; do
+  if ! ping -c 1 -W 3 "$CHECK_HOST" >/dev/null 2>&1; then
+    echo "[CRITICAL] Lost VPN connectivity to $CHECK_HOST — triggering killswitch!"
+    echo "[CRITICAL] Stopping qBittorrent to prevent leaks..."
+
+    # Kill qBittorrent process
+    pkill -9 qbittorrent-nox || true
+
+    # Bring down WireGuard interface
+    wg-quick down /config/wg0.conf 2>/dev/null || true
+
+    echo "[CRITICAL] Container will now exit. Please check your VPN configuration."
+
+    # Exit with error to stop the container
+    exit 1
+  fi
+done
