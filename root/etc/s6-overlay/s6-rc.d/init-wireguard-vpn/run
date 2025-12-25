@@ -112,6 +112,10 @@ if [ -n "$VPN_ENDPOINT" ]; then
     if [ -n "$VPN_ENDPOINT_IP" ]; then
       echo "[INFO] Resolved $VPN_ENDPOINT to $VPN_ENDPOINT_IP"
       iptables -A OUTPUT -d "$VPN_ENDPOINT_IP" -j ACCEPT
+
+      # Replace hostname with IP in WireGuard config so wg-quick doesn't try to resolve it
+      echo "[INFO] Replacing hostname with IP in WireGuard config..."
+      sed -i "s|Endpoint[[:space:]]*=[[:space:]]*${VPN_ENDPOINT}:|Endpoint = ${VPN_ENDPOINT_IP}:|g" "$WG_CONF"
     else
       echo "[ERROR] Failed to resolve VPN endpoint hostname: $VPN_ENDPOINT"
       echo "[ERROR] Cannot reach DNS servers to resolve hostname"
