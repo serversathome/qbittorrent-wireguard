@@ -22,17 +22,24 @@ fi
 
 echo "[INFO] Found WireGuard config at $WG_CONF"
 
-# Extract DNS from config before bringing up interface
-DNS_SERVERS=$(grep "^DNS" "$WG_CONF" | head -1 | cut -d= -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "1.1.1.1,8.8.8.8")
-DNS_SERVERS=$(echo "$DNS_SERVERS" | sed 's/[[:space:]]*,[[:space:]]*/,/g')
+# Extract DNS from config for informational purposes
+VPN_DNS=$(grep "^DNS" "$WG_CONF" | head -1 | cut -d= -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
 
-echo "[INFO] Configuring DNS: $DNS_SERVERS"
+if [ -n "$VPN_DNS" ]; then
+  echo "[INFO] VPN provider DNS: $VPN_DNS (not accessible, using public DNS instead)"
+else
+  echo "[INFO] No VPN DNS specified in config"
+fi
 
-# Set DNS manually before bringing up VPN
-echo "# WireGuard DNS" > /etc/resolv.conf
-echo "$DNS_SERVERS" | tr ',' '\n' | while read -r dns; do
-  [ -n "$dns" ] && echo "nameserver $dns" >> /etc/resolv.conf
-done
+# IMPORTANT: Use public DNS servers instead of VPN provider's DNS
+# VPN provider DNS servers are often not accessible through the tunnel
+# and cause DNS resolution failures. Public DNS (1.1.1.1, 8.8.8.8) always works.
+echo "[INFO] Configuring DNS: 1.1.1.1, 8.8.8.8 (public DNS)"
+
+# Set DNS to public servers
+echo "# Public DNS for reliable resolution" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+echo "nameserver 8.8.8.8" >> /etc/resolv.conf
 
 # CRITICAL FIX: Dynamically detect the default gateway
 GATEWAY=$(ip route | grep default | awk '{print $3}' | head -1)
