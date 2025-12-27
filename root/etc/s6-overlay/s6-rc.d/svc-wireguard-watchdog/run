@@ -8,18 +8,40 @@ echo "[INFO] Starting WireGuard VPN watchdog (checking every ${CHECK_INTERVAL}s)
 
 while sleep "$CHECK_INTERVAL"; do
   if ! ping -c 1 -W 3 "$CHECK_HOST" >/dev/null 2>&1; then
-    echo "[CRITICAL] Lost VPN connectivity to $CHECK_HOST — triggering killswitch!"
-    echo "[CRITICAL] Stopping qBittorrent to prevent leaks..."
+    echo "============================================"
+    echo "[CRITICAL] KILLSWITCH ACTIVATED!"
+    echo "============================================"
+    echo "[CRITICAL] Lost VPN connectivity to $CHECK_HOST"
+    echo "[CRITICAL] Stopping all traffic to prevent leaks..."
 
-    # Kill qBittorrent process
+    # Immediately kill qBittorrent to stop all downloads
     pkill -9 qbittorrent-nox || true
+    echo "[CRITICAL] qBittorrent stopped"
 
     # Bring down WireGuard interface
     wg-quick down /config/wg0.conf 2>/dev/null || true
+    echo "[CRITICAL] VPN interface down"
 
-    echo "[CRITICAL] Container will now exit. Please check your VPN configuration."
+    # Block ALL outgoing traffic except to local networks
+    iptables -F OUTPUT
+    iptables -P OUTPUT DROP
+    iptables -A OUTPUT -d 127.0.0.1 -j ACCEPT
+    iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
+    iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
+    iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
+    echo "[CRITICAL] All external traffic blocked"
 
-    # Exit with error to stop the container
+    echo "[CRITICAL] STOPPING CONTAINER TO PREVENT LEAKS"
+    echo "============================================"
+
+    # Send SIGTERM to init process (PID 1) to stop the entire container
+    # This ensures the container stops and won't restart services
+    kill -TERM 1
+
+    # Give init process time to handle signal
+    sleep 2
+
+    # If still running, force exit
     exit 1
   fi
 done
